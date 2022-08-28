@@ -1,74 +1,66 @@
-use etherparse::InternetSlice::Ipv4;
-use etherparse::{InternetSlice, IpHeader, PacketHeaders, SlicedPacket};
-use pcap::{Capture, Device};
-use rodio::{Sink};
-use std::{thread, time};
+use std::{thread };
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufRead, BufReader};
+use std::net::IpAddr;
+use std::str::FromStr;
+
+use cidr_utils::cidr::IpCidr;
+use etherparse::{ IpHeader, Ipv4Header, PacketHeaders };
+use pcap::{Capture};
 use rodio::{Decoder, OutputStream, source::Source};
 
-fn play_sound() {
-    let (_stream, stream_handle) = OutputStream::try_default().unwrap();
-    let file = BufReader::new(File::open("src/tone.mp3").unwrap());
-    let source = Decoder::new(file).unwrap();
-    stream_handle.play_raw(source.convert_samples());
-
-// The sound plays in a separate audio thread,
-// so we need to keep the main thread alive while it's playing.
-    std::thread::sleep(std::time::Duration::from_secs(5));
-}
-
-
 fn main() {
-    play_sound();
+    let ip_ranges = get_all_ip_ranges();
 
-    let devices = Device::list().unwrap();
-
-
-    println!("requested_device : {:?}", devices);
     let mut cap = Capture::from_device("en0").unwrap()
         .open().unwrap();
 
     while let Ok(packet) = cap.next_packet() {
-        // println!("received packet!");
-        // println!("{:?}", &packet.data);
-
         match PacketHeaders::from_ethernet_slice(&packet) {
-            Err(value) => println!("Err {:?}", value),
+            Err(_) => (),
             Ok(value) => {
-                // println!("link: {:?}", value.link);
-                // println!("vlan: {:?}", value.vlan);
-                // println!("ip: {:?}", value.ip);
-
                 match value.ip {
-                    Some(IpHeader::Version4(value, ..)) => {
-                        let a = value.destination.map(|d| d.to_string()).join(".");
-
-                        // let s = match String::from_utf8_lossy(&value.destination) {
-                        //     Ok(v) => v,
-                        //     Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
-                        // };
-
-                        // println!("s is {}", a.to_string());
-
-                        if  a.to_string().eq("62.2.24.158") {
-                            println!("got a hit!");
-                            play_sound();
-                        }
-
-                    },
-                    Some(IpHeader::Version6(value, ..)) => {
-                        println!("nothing: {:?}", value);
-                    },
-                    None => println!("Error"),
+                    Some(IpHeader::Version4(value, ..)) => check_packet(&ip_ranges, value),
+                    Some(IpHeader::Version6(value, ..)) => println!("Handle ipv6: {:?}", value),
+                    None => (),
                 }
-
-
-                // println!("transport: {:?}", value.transport);
             }
         }
-
     }
-
-
 }
+
+fn get_all_ip_ranges() -> Vec<IpCidr> {
+    let mut vec = Vec::new();
+
+    let reader = BufReader::new(File::open("src/google-cidr-ranges.txt").expect("Cannot open file.txt"));
+    for line in reader.lines() {
+        if let Ok(l) = line {
+            let ipcidr = IpCidr::from_str(&l.trim()).unwrap();
+            vec.push(ipcidr);
+        }
+    }
+    vec
+}
+
+fn check_packet(cidr: &Vec<IpCidr>, value: Ipv4Header) {
+    let destination = value.destination.map(|i| i.to_string()).join(".");
+    let destination_ip = IpAddr::from_str(&destination).unwrap();
+
+    for cid in cidr.iter() {
+        if cid.contains(destination_ip) {
+            println!("google ip is: {}", &destination_ip);
+            beep();
+        }
+    }
+}
+
+fn beep() {
+    thread::spawn(|| {
+        let (_stream, stream_handle) = OutputStream::try_default().unwrap();
+        let file = BufReader::new(File::open("src/tone.mp3").unwrap());
+        let source = Decoder::new(file).unwrap();
+        stream_handle.play_raw(source.convert_samples()).expect("TODO: panic message");
+        thread::sleep(std::time::Duration::from_millis(10));
+    });
+}
+
